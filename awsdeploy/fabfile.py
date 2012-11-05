@@ -1,5 +1,10 @@
 from aws_control import AWSControl
-from fabric.api import settings, hosts, env, run, execute
+from fabric.api import settings, hosts, env, run, execute, task
+import os.path
+from os import remove
+import pickle
+
+TMPDIR="/tmp" #FIXME: add here mkstemp
 
 class FabnetDeploy(AWSControl):
 #    def __init__(self, cluster_name = ""):
@@ -17,17 +22,42 @@ class FabnetDeploy(AWSControl):
 #        for 
     def deploy(self):
         self.install()
+@task
+def configure():
+    fbn.create('amzn-ami-pv-2012.09.0.x86_64-ebs', 3, only_regions = ['eu-west-1'], wait_running = True, security_groups = ['deptest'])
+    env.hosts = fbn._get_hostlist()
+    if not os.path.isfile('/tmp/'+fbn.keys['eu-west-1']['name']+'.pem'):
+        fbn.keys['eu-west-1']['key'].save("/tmp")
 
+
+# main
 fbn = FabnetDeploy(cluster_name = 'depl')
-fbn.create('amzn-ami-pv-2012.09.0.x86_64-ebs', 1, only_regions = ['eu-     west-1'], wait_running = True, security_groups = ['deptest'])
-env.hosts = fbn._get_hostlist()
+metaenv = env
+metaenv.connection_attempts = 20
+metaenv.timeout = 30
+metaenv.user = "ec2-user"
+metaenv.parallel = True
+metaenv.key_filename = TMPDIR+"/"+fbn.cluster_name+".pem"
+metaenv.skip_bad_hosts = True
 
+@task
+def update_os():
+    env = metaenv
+    run("uname -a")
+
+@task
 def install():
-    print env.hosts
+    print env
+    env = metaenv
+    print env
+    update_os()
 
-#    fbn.create('amzn-ami-pv-2012.09.0.x86_64-ebs', 1, only_regions = ['eu-west-1'], wait_running = True, security_groups = ['deptest'])
-    fbn.keys['eu-west-1']['key'].save("/tmp")
-    with settings(remote_hosts = fbn._get_hostlist(), user = "ec2_user", key_filename = "/tmp/depl.pem"):
-        run("sudo yum update")
-#    fbn.teardown()
+@task
+@hosts('')
+def teardown():
+    metaenv.hosts = None
+    env = metaenv
+    fbn.teardown()
+    print "preved"
+    remove(metaenv.key_filename)
 
