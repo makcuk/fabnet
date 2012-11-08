@@ -15,13 +15,14 @@ class AWSControl:
         self.logger = log_func
         self.keys = dict()
 
-    def _enumerate_instances(self):
+    def _enumerate_instances(self, create_tags = True):
 
         for region, inst in self._get_instances():
             node_name = self.cluster_name+str(self.instance_count).zfill(3)
             self.instance_count += 1
             ec2conn = region.connect()
-            ec2conn.create_tags([inst.id], {'Name': node_name, 'group': self.cluster_name})
+            if create_tags:
+                ec2conn.create_tags([inst.id], {'Name': node_name, 'group': self.cluster_name})
             inst.update()
             if not region.name in self.node_set.keys() or not self.node_set[region.name]: self.node_set[region.name] = list()
             self.node_set[region.name].append({node_name: inst.public_dns_name})
@@ -29,14 +30,17 @@ class AWSControl:
     def _gen_keypair(self, region, name):
         ec2conn = region.connect()
         try:
-            keypair = ec2conn.create_key_pair(name)
+            keypair = ec2conn.get_key_pair(name)
+            if not keypair:
+                keypair = ec2conn.create_key_pair(name)
             self.keys[region.name] = {'name': keypair.name, 'key': keypair}
         except IOError:
             raise
 
     def _del_keypair(self, region):
         ec2conn = region.connect()
-        ec2conn.delete_key_pair(self.keys[region.name]['name'])
+        if ec2conn.get_key_pair(self.keys[region.name]['name']):
+            ec2conn.delete_key_pair(self.keys[region.name]['name'])
 
     def _get_instances(self):
         for region, reservation in self.reservations:
@@ -96,21 +100,37 @@ class AWSControl:
             for inst in reservation.instances:
                 inst.update()
                 self.logger("Instance %s status %s" % (inst.id, inst.state))
-
+    def restore(self):
+        if not self.reservations:
+            ec2conn = boto.connect_ec2()
+            regions = boto.ec2.regions()
+            for region in regions:
+                ec2conn = region.connect()
+                for res in ec2conn.get_all_instances():
+                    for inst in res.instances:
+                        inst.update()
+                        if 'group' in inst.tags and inst.tags['group'] == self.cluster_name and inst.state != 'terminated':
+                            self.logger('Found orphan %s' % (inst.tags['Name']))
+                            self.reservations.append([region, res])
+                            self.keys[region.name] = {'name': inst.key_name, 'key': ec2conn.get_key_pair(inst.key_name)}
+                            break
+        self._enumerate_instances(create_tags = False)
 
     def teardown(self):
         for region, reservation in self.reservations:
             ec2conn = region.connect()
-
+            print self.reservations
             for inst in reservation.instances:
                 inst.terminate()
                 self.logger("Terminating %s instance" % (inst.id))
             self._del_keypair(region)
 
 if __name__ == "__main__":
-    fabnet = AWSControl(cluster_name = "moretest")
-    fabnet.create('amzn-ami-pv-2012.09.0.x86_64-ebs', 3, only_regions = ['eu-west-1'], wait_running = True, security_groups = ['deptest'])
-    print "Continue to terminate ? y/n"
-    choice = raw_input().lower()
-    fabnet.deploy()
-    fabnet.teardown()
+    fabnet = AWSControl(cluster_name = "depl")
+#    fabnet.create('amzn-ami-pv-2012.09.0.x86_64-ebs', 3, only_regions = ['eu-west-1'], wait_running = True, security_groups = ['deptest'])
+#    print "Continue to terminate ? y/n"
+#    choice = raw_input().lower()
+#    fabnet.deploy()
+    fabnet.restore()
+    print fabnet.reservations, fabnet.node_set
+#    fabnet.teardown()
